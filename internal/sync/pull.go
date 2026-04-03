@@ -76,12 +76,16 @@ func (s *Service) applyRemoteDoc(ctx context.Context, doc couchdb.MetaDoc) error
 				return fmt.Errorf("decrypt chunk %q: %w", id, err)
 			}
 			content = append(content, plaintext...)
-		} else {
+		} else if doc.Type == "newnote" {
+			// Binary file: chunks are base64-encoded.
 			decoded, err := base64.StdEncoding.DecodeString(data)
 			if err != nil {
 				return fmt.Errorf("decode chunk %q: %w", id, err)
 			}
 			content = append(content, decoded...)
+		} else {
+			// Plain text file: chunks are raw UTF-8 strings.
+			content = append(content, []byte(data)...)
 		}
 	}
 

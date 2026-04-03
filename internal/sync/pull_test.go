@@ -2,7 +2,6 @@ package sync_test
 
 import (
 	"context"
-	"encoding/base64"
 	"os"
 	"path/filepath"
 	"testing"
@@ -37,11 +36,11 @@ func TestPull_OneDocOneChunk(t *testing.T) {
 	cr := crypto.New("")
 	svc := syncsvc.New(db, cr, tmpDir)
 
-	content := []byte("hello from CouchDB")
+	content := "hello from CouchDB"
 	chunkID := "h:abc123"
 	db.chunkDocs[chunkID] = couchdb.ChunkDoc{
 		ID:   chunkID,
-		Data: base64.StdEncoding.EncodeToString(content),
+		Data: content, // plain text docs store raw UTF-8 in the data field
 		Type: "leaf",
 	}
 	db.metaDocs = []couchdb.MetaDoc{
@@ -62,7 +61,7 @@ func TestPull_OneDocOneChunk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if string(got) != string(content) {
+	if string(got) != content {
 		t.Errorf("file content mismatch: got %q, want %q", got, content)
 	}
 }
@@ -73,12 +72,13 @@ func TestPull_MultiChunk(t *testing.T) {
 	cr := crypto.New("")
 	svc := syncsvc.New(db, cr, tmpDir)
 
-	part1 := []byte("chunk one content ")
-	part2 := []byte("chunk two content")
+	part1 := "chunk one content "
+	part2 := "chunk two content"
 	id1 := "h:chunk1"
 	id2 := "h:chunk2"
-	db.chunkDocs[id1] = couchdb.ChunkDoc{ID: id1, Data: base64.StdEncoding.EncodeToString(part1), Type: "leaf"}
-	db.chunkDocs[id2] = couchdb.ChunkDoc{ID: id2, Data: base64.StdEncoding.EncodeToString(part2), Type: "leaf"}
+	// plain type docs store raw UTF-8 text in the data field
+	db.chunkDocs[id1] = couchdb.ChunkDoc{ID: id1, Data: part1, Type: "leaf"}
+	db.chunkDocs[id2] = couchdb.ChunkDoc{ID: id2, Data: part2, Type: "leaf"}
 	db.metaDocs = []couchdb.MetaDoc{
 		{
 			ID:       "multi.txt",
@@ -96,8 +96,8 @@ func TestPull_MultiChunk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	want := append(part1, part2...)
-	if string(got) != string(want) {
+	want := part1 + part2
+	if string(got) != want {
 		t.Errorf("multi-chunk mismatch: got %q, want %q", got, want)
 	}
 }
