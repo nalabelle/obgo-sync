@@ -41,32 +41,34 @@ func rootCmd() *cobra.Command {
 }
 
 func pullCmd(envFile *string) *cobra.Command {
-	var watch, silence bool
+	var watch, silence, verbose bool
 
 	cmd := &cobra.Command{
 		Use:   "pull",
 		Short: "Pull documents from CouchDB to local vault",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return run(cmd.Context(), *envFile, watch, silence, true)
+			return run(cmd.Context(), *envFile, watch, silence, verbose, true)
 		},
 	}
 	cmd.Flags().BoolVarP(&watch, "watch", "w", false, "keep watching for remote changes after pull")
 	cmd.Flags().BoolVarP(&silence, "silence", "s", false, "suppress progress output")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "log each file synced during watch")
 	return cmd
 }
 
 func pushCmd(envFile *string) *cobra.Command {
-	var watch, silence bool
+	var watch, silence, verbose bool
 
 	cmd := &cobra.Command{
 		Use:   "push",
 		Short: "Push local vault files to CouchDB",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return run(cmd.Context(), *envFile, watch, silence, false)
+			return run(cmd.Context(), *envFile, watch, silence, verbose, false)
 		},
 	}
 	cmd.Flags().BoolVarP(&watch, "watch", "w", false, "keep watching for local changes after push")
 	cmd.Flags().BoolVarP(&silence, "silence", "s", false, "suppress progress output")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "log each file synced during watch")
 	return cmd
 }
 
@@ -92,7 +94,7 @@ func hostFromURL(rawURL string) string {
 	return u.Host
 }
 
-func run(parentCtx context.Context, envFile string, watch, silence, isPull bool) error {
+func run(parentCtx context.Context, envFile string, watch, silence, verbose, isPull bool) error {
 	// Load .env file if present; ignore error if file is missing.
 	_ = godotenv.Load(envFile)
 
@@ -175,6 +177,15 @@ func run(parentCtx context.Context, envFile string, watch, silence, isPull bool)
 	if watch {
 		if !silence {
 			fmt.Fprintf(os.Stderr, "Watching for local and remote changes...\n")
+		}
+		if verbose {
+			svc.OnWatchEvent = func(path string, toRemote bool) {
+				if toRemote {
+					fmt.Fprintf(os.Stderr, "  → %s (to remote)\n", path)
+				} else {
+					fmt.Fprintf(os.Stderr, "  ← %s (from remote)\n", path)
+				}
+			}
 		}
 		if err := svc.Watch(ctx); err != nil {
 			return fmt.Errorf("watch failed: %w", err)

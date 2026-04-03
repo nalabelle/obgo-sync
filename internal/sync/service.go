@@ -23,8 +23,9 @@ type Service struct {
 	crypto     *crypto.Service
 	dataDir    string
 	suppress   *watcher.SuppressSet
-	OnPullFile func(n int)
-	OnPushFile func(n int)
+	OnPullFile    func(n int)
+	OnPushFile    func(n int)
+	OnWatchEvent  func(path string, toRemote bool)
 }
 
 // New creates a new sync Service.
@@ -50,7 +51,13 @@ func (s *Service) Watch(ctx context.Context) error {
 			return nil
 		}
 		if event.Doc != nil {
-			return s.applyRemoteDoc(ctx, *event.Doc)
+			if err := s.applyRemoteDoc(ctx, *event.Doc); err != nil {
+				return err
+			}
+			if s.OnWatchEvent != nil {
+				s.OnWatchEvent(event.Doc.Path, false)
+			}
+			return nil
 		}
 		return nil
 	})
@@ -62,6 +69,12 @@ func (s *Service) Watch(ctx context.Context) error {
 			// File written/created: push to CouchDB.
 			if err := s.pushFile(ctx, path); err != nil {
 				fmt.Fprintf(os.Stderr, "watch: push %q: %v\n", path, err)
+				return
+			}
+			if s.OnWatchEvent != nil {
+				if rel, err := filepath.Rel(s.dataDir, path); err == nil {
+					s.OnWatchEvent(filepath.ToSlash(rel), true)
+				}
 			}
 		},
 		func(path string) {
