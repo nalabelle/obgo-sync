@@ -1,6 +1,7 @@
 package couchdb
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // ErrNotFound is returned when a requested document does not exist (HTTP 404).
@@ -334,8 +336,91 @@ func (c *HTTPClient) BulkDocs(ctx context.Context, docs []interface{}) error {
 	return nil
 }
 
+// Changes opens the CouchDB continuous changes feed and returns a channel of ChangeEvents.
+// The goroutine reconnects with exponential backoff on connection errors.
+// The channel is closed when ctx is cancelled.
 func (c *HTTPClient) Changes(ctx context.Context, since string) (<-chan ChangeEvent, error) {
-	return nil, errors.New("Changes: not yet implemented")
+	ch := make(chan ChangeEvent, 10)
+	go func() {
+		defer close(ch)
+		currentSince := since
+		if currentSince == "" {
+			currentSince = "0"
+		}
+		backoff := time.Second
+		for {
+			err := c.streamChanges(ctx, currentSince, ch, &currentSince)
+			if ctx.Err() != nil {
+				return
+			}
+			if err != nil {
+				// Connection dropped — backoff and retry.
+				_ = err
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff < 30*time.Second {
+				backoff *= 2
+				if backoff > 30*time.Second {
+					backoff = 30 * time.Second
+				}
+			}
+		}
+	}()
+	return ch, nil
+}
+
+// streamChanges opens a single long-poll connection to _changes and reads events
+// until the connection closes or ctx is cancelled. lastSeq is updated as events arrive.
+func (c *HTTPClient) streamChanges(ctx context.Context, since string, ch chan<- ChangeEvent, lastSeq *string) error {
+	rawURL := c.dbURL("_changes") +
+		"?feed=continuous&heartbeat=10000&include_docs=true&since=" +
+		url.QueryEscape(since)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return fmt.Errorf("streamChanges: build request: %w", err)
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return fmt.Errorf("streamChanges: connect: %w", err)
+	}
+	defer resp.Body.Close()
+
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			// Empty line = heartbeat; skip.
+			continue
+		}
+		var event ChangeEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			// Skip unparseable lines (e.g. the final {"last_seq":...} summary line).
+			continue
+		}
+		if event.ID == "" {
+			// Not a change event (e.g. last_seq summary); skip.
+			continue
+		}
+		if event.Seq != nil {
+			*lastSeq = fmt.Sprint(event.Seq)
+		}
+		select {
+		case ch <- event:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("streamChanges: scanner: %w", err)
+	}
+	return nil
 }
 
 // GetLocal fetches a _local document by its short ID (without the "_local/" prefix).
