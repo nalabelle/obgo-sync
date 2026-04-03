@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"unicode/utf8"
 
 	"github.com/jookos/obgo/internal/couchdb"
 	"github.com/jookos/obgo/lib/livesync"
@@ -95,6 +96,15 @@ func (s *Service) pushFile(ctx context.Context, absPath string) error {
 	}
 	relPath = filepath.ToSlash(relPath)
 
+	// Determine doc type: plain (text) or newnote (binary).
+	// The livesync protocol stores plain-type chunk data as raw UTF-8 strings
+	// and newnote-type chunk data as base64-encoded bytes.
+	isText := utf8.Valid(content)
+	docType := "newnote"
+	if isText {
+		docType = "plain"
+	}
+
 	// Split into chunks and encrypt.
 	rawChunks := livesync.Split(content, 0)
 	chunkIDs := make([]string, 0, len(rawChunks))
@@ -110,6 +120,8 @@ func (s *Service) pushFile(ctx context.Context, absPath string) error {
 			if err != nil {
 				return fmt.Errorf("encrypt chunk: %w", err)
 			}
+		} else if isText {
+			data = string(chunk)
 		} else {
 			data = base64.StdEncoding.EncodeToString(chunk)
 		}
@@ -151,7 +163,7 @@ func (s *Service) pushFile(ctx context.Context, absPath string) error {
 	meta := &couchdb.MetaDoc{
 		ID:        docID,
 		Rev:       rev,
-		Type:      "plain",
+		Type:      docType,
 		Path:      relPath,
 		CTime:     ctime,
 		MTime:     mtime,

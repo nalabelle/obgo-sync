@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
-
 	"github.com/fsnotify/fsnotify"
 	"github.com/jookos/obgo/internal/couchdb"
 	"github.com/jookos/obgo/internal/crypto"
@@ -47,24 +45,37 @@ func (s *Service) Watch(ctx context.Context, watchLocal, watchRemote bool) error
 	}
 
 	remoteOnEvent := func(ctx context.Context, event couchdb.ChangeEvent) error {
-		// Skip chunk documents (IDs starting with "h:") and docs without a path.
-		if strings.HasPrefix(event.ID, "h:") {
+		// Skip non-file documents (chunk IDs h:..., index IDs i:/f:/ix:..., etc.)
+		_, isFile := livesync.DecodeDocID(event.ID)
+		if !isFile {
 			return nil
 		}
+
+		// Resolve the path: prefer the doc body field, fall back to decoding the event ID.
+		path := ""
+		if event.Doc != nil {
+			path = event.Doc.Path
+		}
+		if path == "" {
+			path, _ = livesync.DecodeDocID(event.ID)
+		}
+		if path == "" {
+			return nil
+		}
+
 		if event.Deleted {
-			if event.Doc != nil && event.Doc.Path != "" {
-				absPath := filepath.Join(s.dataDir, filepath.FromSlash(event.Doc.Path))
-				s.suppress.Add(absPath)
-				return os.Remove(absPath)
-			}
+			absPath := filepath.Join(s.dataDir, filepath.FromSlash(path))
+			s.suppress.Add(absPath)
+			_ = os.Remove(absPath)
 			return nil
 		}
-		if event.Doc != nil && event.Doc.Path != "" {
+		if event.Doc != nil {
+			event.Doc.Path = path
 			if err := s.applyRemoteDoc(ctx, *event.Doc); err != nil {
 				return err
 			}
 			if s.OnWatchEvent != nil {
-				s.OnWatchEvent(event.Doc.Path, false)
+				s.OnWatchEvent(path, false)
 			}
 		}
 		return nil

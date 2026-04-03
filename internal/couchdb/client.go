@@ -390,6 +390,9 @@ func (c *HTTPClient) streamChanges(ctx context.Context, since string, ch chan<- 
 	defer resp.Body.Close()
 
 	scanner := bufio.NewScanner(resp.Body)
+	// Chunk docs can have data fields up to ~136 KB (100 KB base64-encoded).
+	// Increase the scanner buffer to avoid ErrTooLong on those lines.
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
