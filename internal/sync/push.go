@@ -24,6 +24,7 @@ func (s *Service) Push(ctx context.Context) error {
 	}
 
 	// 2. Walk dataDir and push every file.
+	var count int
 	return filepath.WalkDir(s.dataDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -31,7 +32,14 @@ func (s *Service) Push(ctx context.Context) error {
 		if d.IsDir() {
 			return nil
 		}
-		return s.pushFile(ctx, path)
+		if err := s.pushFile(ctx, path); err != nil {
+			return err
+		}
+		count++
+		if s.OnPushFile != nil {
+			s.OnPushFile(count)
+		}
+		return nil
 	})
 }
 

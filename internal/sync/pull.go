@@ -37,9 +37,14 @@ func (s *Service) Pull(ctx context.Context) error {
 	}
 
 	// 3. For each meta doc, fetch chunks, assemble, decrypt, write to disk.
+	var count int
 	for _, doc := range docs {
 		if err := s.applyRemoteDoc(ctx, doc); err != nil {
 			return fmt.Errorf("pull: apply %q: %w", doc.Path, err)
+		}
+		count++
+		if s.OnPullFile != nil {
+			s.OnPullFile(count)
 		}
 	}
 

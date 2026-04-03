@@ -19,10 +19,12 @@ var ErrNotImplemented = errors.New("not implemented")
 
 // Service orchestrates pull, push, and watch operations.
 type Service struct {
-	db       couchdb.Client
-	crypto   *crypto.Service
-	dataDir  string
-	suppress *watcher.SuppressSet
+	db         couchdb.Client
+	crypto     *crypto.Service
+	dataDir    string
+	suppress   *watcher.SuppressSet
+	OnPullFile func(n int)
+	OnPushFile func(n int)
 }
 
 // New creates a new sync Service.

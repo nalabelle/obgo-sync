@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/spf13/cobra"
@@ -39,34 +41,58 @@ func rootCmd() *cobra.Command {
 }
 
 func pullCmd(envFile *string) *cobra.Command {
-	var watch bool
+	var watch, silence bool
 
 	cmd := &cobra.Command{
 		Use:   "pull",
 		Short: "Pull documents from CouchDB to local vault",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return run(cmd.Context(), *envFile, watch, true)
+			return run(cmd.Context(), *envFile, watch, silence, true)
 		},
 	}
 	cmd.Flags().BoolVarP(&watch, "watch", "w", false, "keep watching for remote changes after pull")
+	cmd.Flags().BoolVarP(&silence, "silence", "s", false, "suppress progress output")
 	return cmd
 }
 
 func pushCmd(envFile *string) *cobra.Command {
-	var watch bool
+	var watch, silence bool
 
 	cmd := &cobra.Command{
 		Use:   "push",
 		Short: "Push local vault files to CouchDB",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return run(cmd.Context(), *envFile, watch, false)
+			return run(cmd.Context(), *envFile, watch, silence, false)
 		},
 	}
 	cmd.Flags().BoolVarP(&watch, "watch", "w", false, "keep watching for local changes after push")
+	cmd.Flags().BoolVarP(&silence, "silence", "s", false, "suppress progress output")
 	return cmd
 }
 
-func run(parentCtx context.Context, envFile string, watch bool, isPull bool) error {
+func formatDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	s := int(d.Seconds()) % 60
+	if h > 0 {
+		return fmt.Sprintf("%dh %dm %ds", h, m, s)
+	}
+	if m > 0 {
+		return fmt.Sprintf("%dm %ds", m, s)
+	}
+	return fmt.Sprintf("%ds", s)
+}
+
+func hostFromURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	return u.Host
+}
+
+func run(parentCtx context.Context, envFile string, watch, silence, isPull bool) error {
 	// Load .env file if present; ignore error if file is missing.
 	_ = godotenv.Load(envFile)
 
@@ -104,18 +130,52 @@ func run(parentCtx context.Context, envFile string, watch bool, isPull bool) err
 	}()
 
 	// Run the primary operation.
+	host := hostFromURL(cfg.CouchDBURL)
 	if isPull {
-		if err := svc.Pull(ctx); err != nil {
-			return fmt.Errorf("pull failed: %w", err)
+		if !silence {
+			fmt.Fprintf(os.Stderr, "Pulling from %s...\n", host)
+			var count int
+			start := time.Now()
+			svc.OnPullFile = func(n int) {
+				count = n
+				fmt.Fprintf(os.Stderr, "\rPulled %d file(s)", n)
+			}
+			if err := svc.Pull(ctx); err != nil {
+				fmt.Fprintln(os.Stderr)
+				return fmt.Errorf("pull failed: %w", err)
+			}
+			fmt.Fprintf(os.Stderr, "\rPulled %d files in %s\n", count, formatDuration(time.Since(start)))
+		} else {
+			if err := svc.Pull(ctx); err != nil {
+				return fmt.Errorf("pull failed: %w", err)
+			}
 		}
 	} else {
-		if err := svc.Push(ctx); err != nil {
-			return fmt.Errorf("push failed: %w", err)
+		if !silence {
+			fmt.Fprintf(os.Stderr, "Pushing to %s...\n", host)
+			var count int
+			start := time.Now()
+			svc.OnPushFile = func(n int) {
+				count = n
+				fmt.Fprintf(os.Stderr, "\rPushed %d file(s)", n)
+			}
+			if err := svc.Push(ctx); err != nil {
+				fmt.Fprintln(os.Stderr)
+				return fmt.Errorf("push failed: %w", err)
+			}
+			fmt.Fprintf(os.Stderr, "\rPushed %d files in %s\n", count, formatDuration(time.Since(start)))
+		} else {
+			if err := svc.Push(ctx); err != nil {
+				return fmt.Errorf("push failed: %w", err)
+			}
 		}
 	}
 
 	// Start watch mode if requested.
 	if watch {
+		if !silence {
+			fmt.Fprintf(os.Stderr, "Watching for local and remote changes...\n")
+		}
 		if err := svc.Watch(ctx); err != nil {
 			return fmt.Errorf("watch failed: %w", err)
 		}
