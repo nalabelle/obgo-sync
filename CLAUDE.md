@@ -4,63 +4,61 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-`obgo-live` is a Go CLI that syncs an Obsidian vault with a CouchDB instance using the Obsidian Livesync protocol. It is a lightweight, headless alternative to the Node.js-based Obsidian Livesync — designed for containerized setups (e.g., alongside a QMD/MPC/LLM stack).
+`obgo-live` is a Go CLI that syncs an Obsidian vault with a CouchDB instance using the Obsidian Livesync protocol. It is a headless alternative to the Node.js-based Obsidian Livesync, designed for containerised setups.
 
-## Commands (once scaffolded per ROADMAP.md)
+## Commands
 
 ```bash
-make test          # run tests
-make dev           # start app in dev mode
-make build         # compile the app
-make couchdb       # start CouchDB via Docker Compose (for dev/testing)
+make test               # run unit tests (no Docker required)
+make test-integration   # run integration tests (requires CouchDB via make couchdb)
+make build              # compile to ./obgo
+make dev                # go run ./cmd/obgo
+make couchdb            # start CouchDB via Docker Compose (localhost:5984, admin/password)
 
-go test ./...                  # run all tests
-go test ./internal/... -run TestName  # run a single test
+go test ./internal/sync/... -run TestPull   # run a single test by name
+go test -tags integration ./...             # integration tests only
 ```
 
 ## Configuration
 
-The app reads from environment variables (or a `.env` file):
+Environment variables (or `.env` file loaded at startup):
 
-| Variable       | Description |
-|----------------|-------------|
-| `COUCHDB_URL`  | Full URL including auth and DB name: `https://<user>:<password>@<host>:<port>/<db>` |
-| `E2EE_PASSWORD`| Optional end-to-end encryption key |
-| `OBGO_DATA`    | Path to the local vault folder on disk |
+| Variable        | Required | Description |
+|-----------------|----------|-------------|
+| `COUCHDB_URL`   | yes      | `https://user:password@host:port/dbname` |
+| `OBGO_DATA`     | yes      | Path to local Obsidian vault folder |
+| `E2EE_PASSWORD` | no       | Encryption passphrase; empty disables E2EE |
 
 ## Architecture
 
-Planned Go project layout:
-
 ```
-cmd/           # CLI entry point; loads config, dispatches to services
-internal/      # Business logic (CouchDB client, sync, file watching, E2EE)
-lib/           # Shared utility/library code
-docs/          # Protocol analysis and implementation plan
-docker-compose.yml  # CouchDB for dev/test
-Makefile
+cmd/obgo/main.go          cobra CLI; wires config → HTTPClient → crypto.Service → sync.Service
+internal/config/          Config struct + Load() from env
+internal/couchdb/         Client interface + HTTPClient (net/http against CouchDB REST API)
+internal/crypto/          E2EE encrypt/decrypt (HKDF-SHA256 + AES-256-GCM)
+internal/sync/            pull.go, push.go, service.go — orchestration + Watch
+internal/watcher/         RemoteWatcher (_changes feed), LocalWatcher (fsnotify), SuppressSet
+lib/livesync/             Pure helpers: EncodeDocID/DecodeDocID, Split/Assemble chunks
+docs/                     livesync-protocol.md, implementation-plan.md, architecture.md, flows.md
 ```
 
-### Key flows
+### Key design decisions
 
-- **Pull**: Fetches all documents from CouchDB, decrypts (if E2EE), writes to `OBGO_DATA`. Local files not in CouchDB are pushed up as new.
-- **Push**: Reads `OBGO_DATA`, encrypts (if E2EE), upserts all documents to CouchDB.
-- **Watch mode (`--watch` / `-w`)**: Two concurrent goroutines run after the initial pull/push:
-  1. CouchDB change feed watcher → applies remote changes to disk
-  2. Local filesystem watcher → pushes local changes to CouchDB (ignoring changes made by the app itself to avoid loops)
+**`couchdb.Client` is an interface** — all business logic depends on it, making unit tests straightforward with a `mockClient` (see `internal/sync/*_test.go`).
 
-### Protocol
+**Chunking**: files are split into 100 KB chunks (`lib/livesync/chunk.go`). Each chunk is content-addressed: its `_id` is `h:<sha256(content)>` (plain) or `h:+<sha256(content+passphrase)>` (E2EE). Chunks are uploaded via `_bulk_docs`; `409 Conflict` on a chunk means it already exists and is silently ignored.
 
-The CouchDB protocol used is the Obsidian Livesync protocol. Before implementing, analyze the reference implementation at `https://github.com/vrtmrz/obsidian-livesync` and document findings in `docs/livesync-protocol.md`. Do **not** commit the reference repo into this repository.
+**E2EE**: `crypto.Service` writes V2 (HKDF-AES-256-GCM, `%=` prefix) and reads both V2 and V1 (PBKDF2, `%` prefix). The HKDF salt is stored in `_local/obsidian_livesync_sync_parameters` in CouchDB; `Push` generates and persists a new salt if absent.
 
-## Implementation Roadmap
+**Loop prevention in watch mode**: `watcher.SuppressSet` tracks absolute paths the app just wrote to disk. `LocalWatcher` drops fsnotify events for any suppressed path (2 s TTL, lazy eviction). This prevents the pull→write→fsnotify→push→pull cycle.
 
-See `ROADMAP.md` for the phased implementation plan (protocol analysis → project scaffold → pull/push/watch → tests → docs).
+**Watch mode** (`--watch`): after the initial pull/push, `sync.Service.Watch` starts two goroutines — `RemoteWatcher` streams `_changes?feed=continuous` and calls `applyRemoteDoc`; `LocalWatcher` uses fsnotify and calls `pushFile`. The last CouchDB seq is persisted to `.obgo_seq` inside `OBGO_DATA` for restart resume.
 
-## Implementation way of working
+### Integration tests
 
-- implement in clear increments
-- for each phase, create a new git branch
-- commit early
-- squash merge branches providing a good concise summary of all the changes
-- keep track of your progress so that if interrupted, you will easily know what to continue on
+Files tagged `//go:build integration` use a real CouchDB. Each test creates a database with a random suffix and deletes it in `t.Cleanup`. Run with `make test-integration` after `make couchdb`.
+
+## Way of working
+
+- One git branch per phase; squash-merge to main with a concise summary
+- Keep commits small and focused
