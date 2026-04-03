@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/jookos/obgo/internal/couchdb"
 	"github.com/jookos/obgo/internal/crypto"
 	"github.com/jookos/obgo/internal/watcher"
+	"github.com/jookos/obgo/lib/livesync"
 )
 
 // ErrNotImplemented is returned by stub methods that are not yet implemented.
@@ -51,18 +53,44 @@ func (s *Service) Watch(ctx context.Context) error {
 		return nil
 	})
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- rw.Run(ctx)
-	}()
+	lw := watcher.NewLocalWatcher(
+		s.dataDir,
+		s.suppress,
+		func(path string, op fsnotify.Op) {
+			// File written/created: push to CouchDB.
+			if err := s.pushFile(ctx, path); err != nil {
+				fmt.Fprintf(os.Stderr, "watch: push %q: %v\n", path, err)
+			}
+		},
+		func(path string) {
+			// File removed: delete from CouchDB.
+			relPath, err := filepath.Rel(s.dataDir, path)
+			if err != nil {
+				return
+			}
+			relPath = filepath.ToSlash(relPath)
+			docID := livesync.EncodeDocID(relPath)
+			existing, err := s.db.GetMeta(ctx, docID)
+			if err != nil {
+				return // not in CouchDB, nothing to do
+			}
+			existing.Deleted = true
+			if _, err := s.db.PutMeta(ctx, existing); err != nil {
+				fmt.Fprintf(os.Stderr, "watch: delete %q: %v\n", relPath, err)
+			}
+		},
+	)
 
-	// Local watcher goroutine — Phase 7 will implement the callback.
-	go func() {
-		lw := watcher.NewLocalWatcher(s.dataDir, s.suppress, func(path string, op fsnotify.Op) {
-			// Phase 7 will implement this callback.
-		})
-		_ = lw.Run(ctx)
-	}()
+	remoteErrCh := make(chan error, 1)
+	localErrCh := make(chan error, 1)
 
-	return <-errCh
+	go func() { remoteErrCh <- rw.Run(ctx) }()
+	go func() { localErrCh <- lw.Run(ctx) }()
+
+	select {
+	case err := <-remoteErrCh:
+		return err
+	case err := <-localErrCh:
+		return err
+	}
 }
