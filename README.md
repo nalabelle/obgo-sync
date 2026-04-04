@@ -2,7 +2,7 @@
 
 **GitHub**: https://github.com/jookos/obgo-sync
 
-> **Disclaimer:** Most of this project was AI-generated, with some crucial manual edits. It works for me — both with E2EE encryption and without. Use at your own risk.
+> **Disclaimer:** Most of this project was AI-generated (from ROADMAP.md), with some crucial manual edits. It works for me — both with E2EE encryption and without. Use at your own peril.
 
 `obgo` is a headless Go CLI that syncs an Obsidian vault with a CouchDB instance using the [Obsidian Livesync](https://github.com/vrtmrz/obsidian-livesync) protocol. It is a lightweight alternative to the Node.js-based Obsidian Livesync plugin, designed for containerized or server-side setups where no GUI is available — for example, to keep an Obsidian vault on disk alongside a QMD/MPC/LLM stack so that language-model tooling can read and write vault files.
 
@@ -10,13 +10,9 @@
 
 ## Installation
 
-```bash
-# Install from source via Go toolchain
-go install github.com/jookos/obgo-sync/cmd/obgo@latest
+**[Human speaking]**
 
-# Or build locally
-make build        # produces ./obgo binary
-```
+Clone the repo. `make build`, edit an .env file and try `obgo pull -w -v`. Play around with it, if happy, create an image of it (see make image / Dockerfile for inspiration), add it to your stack, mounting the shared data volume across your apps.
 
 ---
 
