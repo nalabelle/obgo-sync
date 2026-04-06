@@ -43,8 +43,26 @@ Use `--env-file <path>` to load a different file (default: `.env` in the current
 # Pull all documents from CouchDB to the local vault
 obgo pull
 
+# Pull a single file
+obgo pull notes/hello.md
+
+# Pull a folder and all its contents
+obgo pull notes/
+
 # Push local vault files to CouchDB
 obgo push
+
+# Push a single file
+obgo push notes/hello.md
+
+# Push a folder and all its contents
+obgo push notes/
+
+# List the entire remote vault
+obgo list
+
+# List a folder within the remote vault
+obgo list notes/
 
 # Bidirectional watch mode: pull first, then keep vault in sync continuously
 obgo pull --watch
@@ -55,11 +73,13 @@ obgo push --watch
 
 ### Command semantics
 
-**`pull`** treats CouchDB as the source of truth. Existing local files are overwritten with CouchDB data. Local files that do not exist in CouchDB are pushed up as new documents.
+**`pull [path]`** treats CouchDB as the source of truth. Without a path every remote document is written to the local vault. Provide a vault-relative file path to pull only that file, or a path ending with `/` to pull an entire folder.
 
-**`push`** treats the local vault as the source of truth. All local files are upserted to CouchDB, overwriting any existing CouchDB versions.
+**`push [path]`** treats the local vault as the source of truth. Without a path all local files are upserted to CouchDB. Provide a file path or a folder path ending with `/` to restrict the operation to that subset.
 
-**`--watch` / `-w`** (available on both commands) keeps the process running after the initial pull/push. Two concurrent goroutines maintain bidirectional sync:
+**`list [path/]`** prints the contents of the remote vault — one file per line with its size and last-modified time. Pass a folder path ending with `/` to filter to that folder.
+
+**`--watch` / `-w`** (available on `pull` and `push`, ignored when a path argument is given) keeps the process running after the initial sync. Two concurrent goroutines maintain bidirectional sync:
 - A **CouchDB watcher** monitors the `_changes` feed and applies remote changes to disk.
 - A **filesystem watcher** monitors `OBGO_DATA` and pushes local changes to CouchDB.
 

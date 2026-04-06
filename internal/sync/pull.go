@@ -7,13 +7,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/jookos/obgo-sync/internal/couchdb"
+	"github.com/jookos/obgo-sync/lib/livesync"
 )
 
-// Pull fetches all remote documents and writes them to OBGO_DATA.
+// Pull fetches remote documents and writes them to OBGO_DATA.
+// filter is a vault-relative path: empty means all docs, a path ending with "/"
+// pulls that folder and its contents, otherwise pulls the single named file.
 // If E2EE is enabled, it loads the HKDF salt from CouchDB _local doc first.
-func (s *Service) Pull(ctx context.Context) error {
+func (s *Service) Pull(ctx context.Context, filter string) error {
 	// 1. Load HKDF salt from CouchDB _local doc.
 	if s.crypto.Enabled() {
 		params, err := s.db.GetLocal(ctx, "obsidian_livesync_sync_parameters")
@@ -30,15 +34,42 @@ func (s *Service) Pull(ctx context.Context) error {
 		}
 	}
 
-	// 2. Fetch all meta docs.
+	// 2. Single-file shortcut: fetch just that document by ID.
+	if filter != "" && !strings.HasSuffix(filter, "/") {
+		docID := livesync.EncodeDocID(filter)
+		doc, err := s.db.GetMeta(ctx, docID)
+		if err != nil {
+			if errors.Is(err, couchdb.ErrNotFound) {
+				return fmt.Errorf("pull: %q not found in remote vault", filter)
+			}
+			return fmt.Errorf("pull: get %q: %w", filter, err)
+		}
+		resolved, rerr := s.resolveConflicts(ctx, *doc)
+		if rerr != nil {
+			fmt.Fprintf(os.Stderr, "pull: resolve conflicts %q: %v\n", doc.Path, rerr)
+			resolved = *doc
+		}
+		if err := s.applyRemoteDoc(ctx, resolved); err != nil {
+			return fmt.Errorf("pull: apply %q: %w", doc.Path, err)
+		}
+		if s.OnPullFile != nil {
+			s.OnPullFile(1)
+		}
+		return nil
+	}
+
+	// 3. Fetch all meta docs (used for both all-docs and folder-prefix cases).
 	docs, err := s.db.AllMetaDocs(ctx)
 	if err != nil {
 		return fmt.Errorf("pull: list docs: %w", err)
 	}
 
-	// 3. For each meta doc, resolve any CouchDB conflicts, then apply to disk.
+	// 4. For each meta doc, apply to disk (skipping those outside the folder filter).
 	var count int
 	for _, doc := range docs {
+		if filter != "" && !strings.HasPrefix(doc.Path, filter) {
+			continue
+		}
 		resolved, rerr := s.resolveConflicts(ctx, doc)
 		if rerr != nil {
 			fmt.Fprintf(os.Stderr, "pull: resolve conflicts %q: %v\n", doc.Path, rerr)

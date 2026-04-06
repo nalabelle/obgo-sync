@@ -9,14 +9,17 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/jookos/obgo-sync/internal/couchdb"
 	"github.com/jookos/obgo-sync/lib/livesync"
 )
 
-// Push reads all files from OBGO_DATA and upserts them to CouchDB.
-func (s *Service) Push(ctx context.Context) error {
+// Push reads files from OBGO_DATA and upserts them to CouchDB.
+// filter is a vault-relative path: empty means all files, a path ending with "/"
+// pushes that folder and its contents, otherwise pushes the single named file.
+func (s *Service) Push(ctx context.Context, filter string) error {
 	// 1. Ensure salt is set (create if needed) when E2EE is enabled.
 	if s.crypto.Enabled() {
 		if err := s.ensureSalt(ctx); err != nil {
@@ -24,9 +27,28 @@ func (s *Service) Push(ctx context.Context) error {
 		}
 	}
 
-	// 2. Walk dataDir and push every file.
+	// 2. Single-file shortcut.
+	if filter != "" && !strings.HasSuffix(filter, "/") {
+		absPath := filepath.Join(s.dataDir, filepath.FromSlash(filter))
+		if _, err := os.Stat(absPath); err != nil {
+			return fmt.Errorf("push: %q not found locally", filter)
+		}
+		if err := s.pushFile(ctx, absPath); err != nil {
+			return err
+		}
+		if s.OnPushFile != nil {
+			s.OnPushFile(1)
+		}
+		return nil
+	}
+
+	// 3. Walk a directory (whole vault or a folder prefix).
+	walkRoot := s.dataDir
+	if filter != "" {
+		walkRoot = filepath.Join(s.dataDir, filepath.FromSlash(filter))
+	}
 	var count int
-	return filepath.WalkDir(s.dataDir, func(path string, d fs.DirEntry, err error) error {
+	return filepath.WalkDir(walkRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}

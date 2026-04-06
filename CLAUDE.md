@@ -17,6 +17,11 @@ make couchdb            # start CouchDB via Docker Compose (localhost:5984, admi
 
 go test ./internal/sync/... -run TestPull   # run a single test by name
 go test -tags integration ./...             # integration tests only
+
+# CLI sub-commands (all accept an optional vault-relative path argument)
+obgo pull [path]        # pull whole vault, a single file, or a folder (path/ suffix)
+obgo push [path]        # push whole vault, a single file, or a folder (path/ suffix)
+obgo list [path/]       # list remote vault contents, optionally filtered to a folder
 ```
 
 ## Configuration

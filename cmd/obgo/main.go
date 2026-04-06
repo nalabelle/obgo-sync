@@ -36,6 +36,7 @@ func rootCmd() *cobra.Command {
 
 	root.AddCommand(pullCmd(&envFile))
 	root.AddCommand(pushCmd(&envFile))
+	root.AddCommand(listCmd(&envFile))
 
 	return root
 }
@@ -44,12 +45,22 @@ func pullCmd(envFile *string) *cobra.Command {
 	var watch, watchLocal, watchRemote, silence, verbose bool
 
 	cmd := &cobra.Command{
-		Use:   "pull",
+		Use:   "pull [path]",
 		Short: "Pull documents from CouchDB to local vault",
+		Long: `Pull documents from CouchDB to the local vault.
+
+Without a path argument every document is pulled. Provide a vault-relative path
+to pull a single file, or a path ending with "/" to pull a folder and all its
+contents.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			filter := ""
+			if len(args) == 1 {
+				filter = args[0]
+			}
 			wl := watchLocal || watch
 			wr := watchRemote || watch
-			return run(cmd.Context(), *envFile, wl, wr, silence, verbose, true)
+			return run(cmd.Context(), *envFile, wl, wr, silence, verbose, true, filter)
 		},
 	}
 	cmd.Flags().BoolVarP(&watch, "watch", "w", false, "watch for both local and remote changes after pull")
@@ -64,12 +75,22 @@ func pushCmd(envFile *string) *cobra.Command {
 	var watch, watchLocal, watchRemote, silence, verbose bool
 
 	cmd := &cobra.Command{
-		Use:   "push",
+		Use:   "push [path]",
 		Short: "Push local vault files to CouchDB",
+		Long: `Push local vault files to CouchDB.
+
+Without a path argument every local file is pushed. Provide a vault-relative
+path to push a single file, or a path ending with "/" to push a folder and all
+its contents.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			filter := ""
+			if len(args) == 1 {
+				filter = args[0]
+			}
 			wl := watchLocal || watch
 			wr := watchRemote || watch
-			return run(cmd.Context(), *envFile, wl, wr, silence, verbose, false)
+			return run(cmd.Context(), *envFile, wl, wr, silence, verbose, false, filter)
 		},
 	}
 	cmd.Flags().BoolVarP(&watch, "watch", "w", false, "watch for both local and remote changes after push")
@@ -78,6 +99,55 @@ func pushCmd(envFile *string) *cobra.Command {
 	cmd.Flags().BoolVarP(&silence, "silence", "s", false, "suppress progress output")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "log each file synced during watch")
 	return cmd
+}
+
+func listCmd(envFile *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "list [path/]",
+		Short: "List the contents of the remote vault",
+		Long: `List documents stored in the remote CouchDB vault.
+
+Without an argument all documents are listed. Provide a folder path ending with
+"/" to list only that folder's contents.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			prefix := ""
+			if len(args) == 1 {
+				prefix = args[0]
+			}
+			_ = godotenv.Load(*envFile)
+			cfg, err := config.Load()
+			if err != nil {
+				return fmt.Errorf("configuration error: %w", err)
+			}
+			db, err := couchdb.New(cfg.CouchDBURL)
+			if err != nil {
+				return fmt.Errorf("CouchDB client error: %w", err)
+			}
+			cr := crypto.New(cfg.E2EEPassword)
+			svc := sync.New(db, cr, cfg.DataPath)
+			docs, err := svc.List(cmd.Context(), prefix)
+			if err != nil {
+				return fmt.Errorf("list failed: %w", err)
+			}
+			for _, doc := range docs {
+				t := time.UnixMilli(doc.MTime).Local()
+				fmt.Printf("%-50s  %8s  %s\n", doc.Path, formatSize(doc.Size), t.Format("2006-01-02 15:04"))
+			}
+			return nil
+		},
+	}
+}
+
+func formatSize(bytes int64) string {
+	switch {
+	case bytes < 1024:
+		return fmt.Sprintf("%d B", bytes)
+	case bytes < 1024*1024:
+		return fmt.Sprintf("%.1f KB", float64(bytes)/1024)
+	default:
+		return fmt.Sprintf("%.1f MB", float64(bytes)/(1024*1024))
+	}
 }
 
 func formatDuration(d time.Duration) string {
@@ -102,7 +172,7 @@ func hostFromURL(rawURL string) string {
 	return u.Host
 }
 
-func run(parentCtx context.Context, envFile string, watchLocal, watchRemote, silence, verbose, isPull bool) error {
+func run(parentCtx context.Context, envFile string, watchLocal, watchRemote, silence, verbose, isPull bool, filter string) error {
 	// Load .env file if present; ignore error if file is missing.
 	_ = godotenv.Load(envFile)
 
@@ -150,13 +220,13 @@ func run(parentCtx context.Context, envFile string, watchLocal, watchRemote, sil
 				count = n
 				fmt.Fprintf(os.Stderr, "\rPulled %d file(s)", n)
 			}
-			if err := svc.Pull(ctx); err != nil {
+			if err := svc.Pull(ctx, filter); err != nil {
 				fmt.Fprintln(os.Stderr)
 				return fmt.Errorf("pull failed: %w", err)
 			}
 			fmt.Fprintf(os.Stderr, "\rPulled %d files in %s\n", count, formatDuration(time.Since(start)))
 		} else {
-			if err := svc.Pull(ctx); err != nil {
+			if err := svc.Pull(ctx, filter); err != nil {
 				return fmt.Errorf("pull failed: %w", err)
 			}
 		}
@@ -169,20 +239,20 @@ func run(parentCtx context.Context, envFile string, watchLocal, watchRemote, sil
 				count = n
 				fmt.Fprintf(os.Stderr, "\rPushed %d file(s)", n)
 			}
-			if err := svc.Push(ctx); err != nil {
+			if err := svc.Push(ctx, filter); err != nil {
 				fmt.Fprintln(os.Stderr)
 				return fmt.Errorf("push failed: %w", err)
 			}
 			fmt.Fprintf(os.Stderr, "\rPushed %d files in %s\n", count, formatDuration(time.Since(start)))
 		} else {
-			if err := svc.Push(ctx); err != nil {
+			if err := svc.Push(ctx, filter); err != nil {
 				return fmt.Errorf("push failed: %w", err)
 			}
 		}
 	}
 
-	// Start watch mode if requested.
-	if watchLocal || watchRemote {
+	// Start watch mode if requested (skip when a path filter is active).
+	if (watchLocal || watchRemote) && filter == "" {
 		if !silence {
 			switch {
 			case watchLocal && watchRemote:

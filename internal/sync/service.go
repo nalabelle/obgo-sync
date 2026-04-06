@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
+
 	"github.com/fsnotify/fsnotify"
 	"github.com/jookos/obgo-sync/internal/couchdb"
 	"github.com/jookos/obgo-sync/internal/crypto"
@@ -35,6 +38,29 @@ func New(db couchdb.Client, cr *crypto.Service, dataDir string) *Service {
 		dataDir:  dataDir,
 		suppress: watcher.NewSuppressSet(),
 	}
+}
+
+// List returns the meta documents in the remote vault, optionally filtered by a
+// vault-relative path prefix. prefix="" returns all documents; prefix ending
+// with "/" returns documents inside that folder; a bare filename returns only
+// that file (exact path match). Results are sorted by path.
+func (s *Service) List(ctx context.Context, prefix string) ([]couchdb.MetaDoc, error) {
+	docs, err := s.db.AllMetaDocs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list: %w", err)
+	}
+	if prefix == "" {
+		sort.Slice(docs, func(i, j int) bool { return docs[i].Path < docs[j].Path })
+		return docs, nil
+	}
+	var result []couchdb.MetaDoc
+	for _, doc := range docs {
+		if strings.HasPrefix(doc.Path, prefix) {
+			result = append(result, doc)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Path < result[j].Path })
+	return result, nil
 }
 
 // Watch starts the local and/or remote watcher depending on the flags.

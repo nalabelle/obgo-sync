@@ -71,7 +71,7 @@ Implement:
 
 Create documentation for the implementation that present the architecture, and the logic of the most important flows.
  
-## 9 Additional commands (TBD: if someone wants to throw tokens at it)
+## 9 Additional commands ✓
 
 Implement pulling and pushing of individual items, as well as listing the content of the remote vault.
 
