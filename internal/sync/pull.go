@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,8 +17,9 @@ import (
 // Pull fetches remote documents and writes them to OBGO_DATA.
 // filter is a vault-relative path: empty means all docs, a path ending with "/"
 // pulls that folder and its contents, otherwise pulls the single named file.
+// If delete is true, local files not present in the remote set are removed.
 // If E2EE is enabled, it loads the HKDF salt from CouchDB _local doc first.
-func (s *Service) Pull(ctx context.Context, filter string) error {
+func (s *Service) Pull(ctx context.Context, filter string, delete bool) error {
 	// 1. Load HKDF salt from CouchDB _local doc.
 	if s.crypto.Enabled() {
 		params, err := s.db.GetLocal(ctx, "obsidian_livesync_sync_parameters")
@@ -82,6 +84,88 @@ func (s *Service) Pull(ctx context.Context, filter string) error {
 		if s.OnPullFile != nil {
 			s.OnPullFile(count)
 		}
+	}
+
+	// 5. Delete local files not present in remote (when --delete is set).
+	if delete {
+		if err := s.pruneLocal(docs, filter); err != nil {
+			return fmt.Errorf("pull: prune: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// pruneLocal walks the local filesystem and removes files that do not have a
+// corresponding meta document in the remote set. Empty directories left behind
+// after file removal are also cleaned up.
+// When filter is non-empty, only files under that prefix are considered for
+// deletion; files outside the prefix are left untouched.
+func (s *Service) pruneLocal(docs []couchdb.MetaDoc, filter string) error {
+	remotePaths := make(map[string]struct{}, len(docs))
+	for _, doc := range docs {
+		if filter != "" && !strings.HasPrefix(doc.Path, filter) {
+			continue
+		}
+		remotePaths[doc.Path] = struct{}{}
+	}
+
+	walkRoot := s.dataDir
+	if filter != "" {
+		walkRoot = filepath.Join(s.dataDir, filepath.FromSlash(filter))
+	}
+
+	var deleted int
+	err := filepath.WalkDir(walkRoot, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		rel, err := filepath.Rel(s.dataDir, path)
+		if err != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+
+		if rel == "." || strings.HasPrefix(filepath.Base(rel), ".obgo") {
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+
+		if _, ok := remotePaths[rel]; !ok {
+			s.suppress.Add(path)
+			if err := os.Remove(path); err != nil {
+				fmt.Fprintf(os.Stderr, "prune: remove %q: %v\n", rel, err)
+				return nil
+			}
+			deleted++
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	// Remove empty directories left behind after pruning files.
+	if deleted > 0 {
+		var dirs []string
+		filepath.WalkDir(walkRoot, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || !d.IsDir() {
+				return nil
+			}
+			dirs = append(dirs, path)
+			return nil
+		})
+		for i := len(dirs) - 1; i >= 0; i-- {
+			rel, _ := filepath.Rel(s.dataDir, dirs[i])
+			if rel == "." || strings.HasPrefix(filepath.Base(rel), ".obgo") {
+				continue
+			}
+			_ = os.Remove(dirs[i])
+		}
+		fmt.Fprintf(os.Stderr, "Pruned %d local file(s)\n", deleted)
 	}
 
 	return nil

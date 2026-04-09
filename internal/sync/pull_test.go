@@ -17,7 +17,7 @@ func TestPull_EmptyVault(t *testing.T) {
 	cr := crypto.New("")
 	svc := syncsvc.New(db, cr, tmpDir)
 
-	if err := svc.Pull(context.Background(), ""); err != nil {
+	if err := svc.Pull(context.Background(), "", false); err != nil {
 		t.Fatalf("Pull with empty vault: %v", err)
 	}
 
@@ -52,7 +52,7 @@ func TestPull_OneDocOneChunk(t *testing.T) {
 		},
 	}
 
-	if err := svc.Pull(context.Background(), ""); err != nil {
+	if err := svc.Pull(context.Background(), "", false); err != nil {
 		t.Fatalf("Pull: %v", err)
 	}
 
@@ -88,7 +88,7 @@ func TestPull_MultiChunk(t *testing.T) {
 		},
 	}
 
-	if err := svc.Pull(context.Background(), ""); err != nil {
+	if err := svc.Pull(context.Background(), "", false); err != nil {
 		t.Fatalf("Pull: %v", err)
 	}
 
@@ -116,7 +116,7 @@ func TestPull_SingleFilePath(t *testing.T) {
 		{ID: "notes/other.md", Type: "plain", Path: "notes/other.md", Children: []string{id2}},
 	}
 
-	if err := svc.Pull(context.Background(), "notes/wanted.md"); err != nil {
+	if err := svc.Pull(context.Background(), "notes/wanted.md", false); err != nil {
 		t.Fatalf("Pull single file: %v", err)
 	}
 
@@ -145,7 +145,7 @@ func TestPull_FolderPath(t *testing.T) {
 		{ID: "projects/x.md", Type: "plain", Path: "projects/x.md", Children: []string{id3}},
 	}
 
-	if err := svc.Pull(context.Background(), "notes/"); err != nil {
+	if err := svc.Pull(context.Background(), "notes/", false); err != nil {
 		t.Fatalf("Pull folder: %v", err)
 	}
 
@@ -156,5 +156,107 @@ func TestPull_FolderPath(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(tmpDir, "projects", "x.md")); !os.IsNotExist(err) {
 		t.Error("projects/x.md should not have been pulled")
+	}
+}
+
+func TestPull_DeleteRemovesStaleFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	db := newMockClient()
+	cr := crypto.New("")
+	svc := syncsvc.New(db, cr, tmpDir)
+
+	// Create a local file that has no remote counterpart.
+	staleDir := filepath.Join(tmpDir, "stale")
+	if err := os.MkdirAll(staleDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staleDir, "old.md"), []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Remote has one doc.
+	chunkID := "h:keep"
+	db.chunkDocs[chunkID] = couchdb.ChunkDoc{ID: chunkID, Data: "kept", Type: "leaf"}
+	db.metaDocs = []couchdb.MetaDoc{
+		{ID: "keep.md", Type: "plain", Path: "keep.md", Children: []string{chunkID}},
+	}
+
+	if err := svc.Pull(context.Background(), "", true); err != nil {
+		t.Fatalf("Pull --delete: %v", err)
+	}
+
+	// The remote file should exist.
+	if _, err := os.Stat(filepath.Join(tmpDir, "keep.md")); err != nil {
+		t.Errorf("keep.md should exist: %v", err)
+	}
+	// The stale file should be gone.
+	if _, err := os.Stat(filepath.Join(staleDir, "old.md")); !os.IsNotExist(err) {
+		t.Error("stale/old.md should have been deleted")
+	}
+	// The empty directory should be gone.
+	if _, err := os.Stat(staleDir); !os.IsNotExist(err) {
+		t.Error("stale/ directory should have been removed")
+	}
+}
+
+func TestPull_DeleteSkipsObgoFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	db := newMockClient()
+	cr := crypto.New("")
+	svc := syncsvc.New(db, cr, tmpDir)
+
+	// Create internal state files.
+	if err := os.WriteFile(filepath.Join(tmpDir, ".obgo_seq"), []byte("seq"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// No remote docs.
+	db.metaDocs = nil
+
+	if err := svc.Pull(context.Background(), "", true); err != nil {
+		t.Fatalf("Pull --delete: %v", err)
+	}
+
+	// Internal state file should not be deleted.
+	if _, err := os.Stat(filepath.Join(tmpDir, ".obgo_seq")); err != nil {
+		t.Errorf(".obgo_seq should exist: %v", err)
+	}
+}
+
+func TestPull_DeleteWithFilter(t *testing.T) {
+	tmpDir := t.TempDir()
+	db := newMockClient()
+	cr := crypto.New("")
+	svc := syncsvc.New(db, cr, tmpDir)
+
+	// Create stale files inside and outside the filter prefix.
+	if err := os.MkdirAll(filepath.Join(tmpDir, "notes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "notes", "stale.md"), []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "orphan.md"), []byte("orphan"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Remote has one doc inside the filter prefix.
+	chunkID := "h:n1"
+	db.chunkDocs[chunkID] = couchdb.ChunkDoc{ID: chunkID, Data: "kept", Type: "leaf"}
+	db.metaDocs = []couchdb.MetaDoc{
+		{ID: "notes/keep.md", Type: "plain", Path: "notes/keep.md", Children: []string{chunkID}},
+	}
+
+	if err := svc.Pull(context.Background(), "notes/", true); err != nil {
+		t.Fatalf("Pull --delete with filter: %v", err)
+	}
+
+	// Stale file in the filtered prefix should be deleted.
+	if _, err := os.Stat(filepath.Join(tmpDir, "notes", "stale.md")); !os.IsNotExist(err) {
+		t.Error("notes/stale.md should have been deleted")
+	}
+	// File outside the filter prefix should be untouched.
+	if _, err := os.Stat(filepath.Join(tmpDir, "orphan.md")); err != nil {
+		t.Errorf("orphan.md should still exist: %v", err)
 	}
 }

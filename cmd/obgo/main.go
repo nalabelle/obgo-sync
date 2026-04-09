@@ -42,7 +42,7 @@ func rootCmd() *cobra.Command {
 }
 
 func pullCmd(envFile *string) *cobra.Command {
-	var watch, watchLocal, watchRemote, silence, verbose bool
+	var watch, watchLocal, watchRemote, silence, verbose, delete bool
 
 	cmd := &cobra.Command{
 		Use:   "pull [path]",
@@ -60,7 +60,7 @@ contents.`,
 			}
 			wl := watchLocal || watch
 			wr := watchRemote || watch
-			return run(cmd.Context(), *envFile, wl, wr, silence, verbose, true, filter)
+			return run(cmd.Context(), *envFile, wl, wr, silence, verbose, true, delete, filter)
 		},
 	}
 	cmd.Flags().BoolVarP(&watch, "watch", "w", false, "watch for both local and remote changes after pull")
@@ -68,6 +68,7 @@ contents.`,
 	cmd.Flags().BoolVar(&watchRemote, "wr", false, "watch for remote changes and pull them after pull")
 	cmd.Flags().BoolVarP(&silence, "silence", "s", false, "suppress progress output")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "log each file synced during watch")
+	cmd.Flags().BoolVar(&delete, "delete", false, "delete local files not present in remote vault")
 	return cmd
 }
 
@@ -90,7 +91,7 @@ its contents.`,
 			}
 			wl := watchLocal || watch
 			wr := watchRemote || watch
-			return run(cmd.Context(), *envFile, wl, wr, silence, verbose, false, filter)
+			return run(cmd.Context(), *envFile, wl, wr, silence, verbose, false, false, filter)
 		},
 	}
 	cmd.Flags().BoolVarP(&watch, "watch", "w", false, "watch for both local and remote changes after push")
@@ -172,7 +173,7 @@ func hostFromURL(rawURL string) string {
 	return u.Host
 }
 
-func run(parentCtx context.Context, envFile string, watchLocal, watchRemote, silence, verbose, isPull bool, filter string) error {
+func run(parentCtx context.Context, envFile string, watchLocal, watchRemote, silence, verbose, isPull, delete bool, filter string) error {
 	// Load .env file if present; ignore error if file is missing.
 	_ = godotenv.Load(envFile)
 
@@ -220,13 +221,13 @@ func run(parentCtx context.Context, envFile string, watchLocal, watchRemote, sil
 				count = n
 				fmt.Fprintf(os.Stderr, "\rPulled %d file(s)", n)
 			}
-			if err := svc.Pull(ctx, filter); err != nil {
+			if err := svc.Pull(ctx, filter, delete); err != nil {
 				fmt.Fprintln(os.Stderr)
 				return fmt.Errorf("pull failed: %w", err)
 			}
 			fmt.Fprintf(os.Stderr, "\rPulled %d files in %s\n", count, formatDuration(time.Since(start)))
 		} else {
-			if err := svc.Pull(ctx, filter); err != nil {
+			if err := svc.Pull(ctx, filter, delete); err != nil {
 				return fmt.Errorf("pull failed: %w", err)
 			}
 		}
