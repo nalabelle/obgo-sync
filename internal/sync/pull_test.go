@@ -393,3 +393,76 @@ func TestPull_SkipsLiveSyncSoftDeletedDocsWithoutDelete(t *testing.T) {
 		t.Errorf("willalso.md should be unchanged: got %q", got)
 	}
 }
+
+func TestPull_DeleteRemovesEmptyDirsAfterSoftDelete(t *testing.T) {
+	tmpDir := t.TempDir()
+	db := newMockClient()
+	cr := crypto.New("")
+	svc := syncsvc.New(db, cr, tmpDir)
+
+	// Create a local file in a nested directory.
+	subDir := filepath.Join(tmpDir, "notes", "sub")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subDir, "gone.md"), []byte("remove me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Remote marks the doc as LiveSync soft-deleted.
+	db.metaDocs = []couchdb.MetaDoc{
+		{ID: "notes/sub/gone.md", Type: "plain", Path: "notes/sub/gone.md", Del: true},
+	}
+
+	if err := svc.Pull(context.Background(), "", true); err != nil {
+		t.Fatalf("Pull --delete: %v", err)
+	}
+
+	// File should be gone.
+	if _, err := os.Stat(filepath.Join(subDir, "gone.md")); !os.IsNotExist(err) {
+		t.Error("notes/sub/gone.md should have been deleted")
+	}
+	// Empty parent directories should be removed.
+	if _, err := os.Stat(subDir); !os.IsNotExist(err) {
+		t.Error("notes/sub/ directory should have been removed")
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "notes")); !os.IsNotExist(err) {
+		t.Error("notes/ directory should have been removed")
+	}
+}
+
+func TestPull_SingleFileSoftDeleteRemovesEmptyDirs(t *testing.T) {
+	tmpDir := t.TempDir()
+	db := newMockClient()
+	cr := crypto.New("")
+	svc := syncsvc.New(db, cr, tmpDir)
+
+	// Create a local file in a nested directory.
+	subDir := filepath.Join(tmpDir, "notes", "deep")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subDir, "target.md"), []byte("bye"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Remote marks this single doc as deleted.
+	db.metaDocs = []couchdb.MetaDoc{
+		{ID: "notes/deep/target.md", Type: "plain", Path: "notes/deep/target.md", Del: true},
+	}
+
+	// Pull with --delete targeting the single file.
+	if err := svc.Pull(context.Background(), "notes/deep/target.md", true); err != nil {
+		t.Fatalf("Pull single file --delete: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(subDir, "target.md")); !os.IsNotExist(err) {
+		t.Error("notes/deep/target.md should have been deleted")
+	}
+	if _, err := os.Stat(subDir); !os.IsNotExist(err) {
+		t.Error("notes/deep/ directory should have been removed")
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "notes")); !os.IsNotExist(err) {
+		t.Error("notes/ directory should have been removed")
+	}
+}

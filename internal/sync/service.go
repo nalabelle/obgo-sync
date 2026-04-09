@@ -91,8 +91,7 @@ func (s *Service) Watch(ctx context.Context, watchLocal, watchRemote bool) error
 
 		if event.Deleted || (event.Doc != nil && (event.Doc.Deleted || event.Doc.Del)) {
 			absPath := filepath.Join(s.dataDir, filepath.FromSlash(path))
-			s.suppress.Add(absPath)
-			_ = os.Remove(absPath)
+			_ = s.removeAndCleanup(absPath)
 			return nil
 		}
 		if event.Doc != nil {

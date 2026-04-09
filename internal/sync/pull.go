@@ -50,8 +50,7 @@ func (s *Service) Pull(ctx context.Context, filter string, delete bool) error {
 		if doc.Deleted || doc.Del {
 			if delete {
 				absPath := filepath.Join(s.dataDir, filepath.FromSlash(doc.Path))
-				s.suppress.Add(absPath)
-				_ = os.Remove(absPath)
+				_ = s.removeAndCleanup(absPath)
 			}
 			return nil
 		}
@@ -147,10 +146,9 @@ func (s *Service) pruneLocal(docs []couchdb.MetaDoc, filter string) error {
 	// Remove local files for soft-deleted docs.
 	for _, p := range deletePaths {
 		absPath := filepath.Join(s.dataDir, filepath.FromSlash(p))
-		s.suppress.Add(absPath)
-		if err := os.Remove(absPath); err != nil && !os.IsNotExist(err) {
+		if err := s.removeAndCleanup(absPath); err != nil {
 			fmt.Fprintf(os.Stderr, "prune: remove deleted doc %q: %v\n", p, err)
-		} else if err == nil {
+		} else {
 			deleted++
 		}
 	}
@@ -207,6 +205,22 @@ func (s *Service) pruneLocal(docs []couchdb.MetaDoc, filter string) error {
 		fmt.Fprintf(os.Stderr, "Pruned %d local file(s)\n", deleted)
 	}
 
+	return nil
+}
+
+// removeAndCleanup removes the file at absPath and then walks up from its
+// parent directory toward dataDir, removing any empty directories left behind.
+// It stops at dataDir or when a directory is not empty.
+func (s *Service) removeAndCleanup(absPath string) error {
+	s.suppress.Add(absPath)
+	if err := os.Remove(absPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for dir := filepath.Dir(absPath); dir != s.dataDir && dir != "/"; dir = filepath.Dir(dir) {
+		if os.Remove(dir) != nil {
+			break
+		}
+	}
 	return nil
 }
 
