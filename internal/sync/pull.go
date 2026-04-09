@@ -46,6 +46,15 @@ func (s *Service) Pull(ctx context.Context, filter string, delete bool) error {
 			}
 			return fmt.Errorf("pull: get %q: %w", filter, err)
 		}
+		// Soft-deleted docs: remove local file if --delete, otherwise skip.
+		if doc.Deleted {
+			if delete {
+				absPath := filepath.Join(s.dataDir, filepath.FromSlash(doc.Path))
+				s.suppress.Add(absPath)
+				_ = os.Remove(absPath)
+			}
+			return nil
+		}
 		resolved, rerr := s.resolveConflicts(ctx, *doc)
 		if rerr != nil {
 			fmt.Fprintf(os.Stderr, "pull: resolve conflicts %q: %v\n", doc.Path, rerr)
@@ -66,9 +75,12 @@ func (s *Service) Pull(ctx context.Context, filter string, delete bool) error {
 		return fmt.Errorf("pull: list docs: %w", err)
 	}
 
-	// 4. For each meta doc, apply to disk (skipping those outside the folder filter).
+	// 4. For each meta doc, apply to disk (skipping soft-deleted and those outside the folder filter).
 	var count int
 	for _, doc := range docs {
+		if doc.Deleted {
+			continue
+		}
 		if filter != "" && !strings.HasPrefix(doc.Path, filter) {
 			continue
 		}
@@ -104,10 +116,25 @@ func (s *Service) Pull(ctx context.Context, filter string, delete bool) error {
 func (s *Service) pruneLocal(docs []couchdb.MetaDoc, filter string) error {
 	remotePaths := make(map[string]struct{}, len(docs))
 	for _, doc := range docs {
+		if doc.Deleted {
+			continue
+		}
 		if filter != "" && !strings.HasPrefix(doc.Path, filter) {
 			continue
 		}
 		remotePaths[doc.Path] = struct{}{}
+	}
+
+	// Also collect paths of soft-deleted docs so we can remove their local files.
+	var deletePaths []string
+	for _, doc := range docs {
+		if !doc.Deleted {
+			continue
+		}
+		if filter != "" && !strings.HasPrefix(doc.Path, filter) {
+			continue
+		}
+		deletePaths = append(deletePaths, doc.Path)
 	}
 
 	walkRoot := s.dataDir
@@ -116,6 +143,18 @@ func (s *Service) pruneLocal(docs []couchdb.MetaDoc, filter string) error {
 	}
 
 	var deleted int
+
+	// Remove local files for soft-deleted docs.
+	for _, p := range deletePaths {
+		absPath := filepath.Join(s.dataDir, filepath.FromSlash(p))
+		s.suppress.Add(absPath)
+		if err := os.Remove(absPath); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "prune: remove deleted doc %q: %v\n", p, err)
+		} else if err == nil {
+			deleted++
+		}
+	}
+
 	err := filepath.WalkDir(walkRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err

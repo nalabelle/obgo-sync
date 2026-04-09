@@ -260,3 +260,72 @@ func TestPull_DeleteWithFilter(t *testing.T) {
 		t.Errorf("orphan.md should still exist: %v", err)
 	}
 }
+
+func TestPull_DeleteRemovesSoftDeletedDocs(t *testing.T) {
+	tmpDir := t.TempDir()
+	db := newMockClient()
+	cr := crypto.New("")
+	svc := syncsvc.New(db, cr, tmpDir)
+
+	// Create local files for both active and soft-deleted docs.
+	if err := os.MkdirAll(filepath.Join(tmpDir, "notes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "notes", "active.md"), []byte("old content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "notes", "deleted.md"), []byte("should be removed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Remote has an active doc and a soft-deleted doc.
+	chunkID := "h:active"
+	db.chunkDocs[chunkID] = couchdb.ChunkDoc{ID: chunkID, Data: "active content", Type: "leaf"}
+	db.metaDocs = []couchdb.MetaDoc{
+		{ID: "notes/active.md", Type: "plain", Path: "notes/active.md", Children: []string{chunkID}},
+		{ID: "notes/deleted.md", Type: "plain", Path: "notes/deleted.md", Deleted: true},
+	}
+
+	if err := svc.Pull(context.Background(), "", true); err != nil {
+		t.Fatalf("Pull --delete: %v", err)
+	}
+
+	// Active file should exist with updated content.
+	if got, err := os.ReadFile(filepath.Join(tmpDir, "notes", "active.md")); err != nil {
+		t.Errorf("notes/active.md should exist: %v", err)
+	} else if string(got) != "active content" {
+		t.Errorf("notes/active.md content: got %q, want %q", got, "active content")
+	}
+	// Soft-deleted file should be removed.
+	if _, err := os.Stat(filepath.Join(tmpDir, "notes", "deleted.md")); !os.IsNotExist(err) {
+		t.Error("notes/deleted.md should have been deleted")
+	}
+}
+
+func TestPull_SkipsSoftDeletedDocsWithoutDelete(t *testing.T) {
+	tmpDir := t.TempDir()
+	db := newMockClient()
+	cr := crypto.New("")
+	svc := syncsvc.New(db, cr, tmpDir)
+
+	// Create a local file that exists as a soft-deleted doc in remote.
+	if err := os.WriteFile(filepath.Join(tmpDir, "willremain.md"), []byte("local copy"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Remote has only a soft-deleted doc.
+	db.metaDocs = []couchdb.MetaDoc{
+		{ID: "willremain.md", Type: "plain", Path: "willremain.md", Deleted: true},
+	}
+
+	if err := svc.Pull(context.Background(), "", false); err != nil {
+		t.Fatalf("Pull (no --delete): %v", err)
+	}
+
+	// Without --delete, the local file should remain (soft-deleted docs are skipped, not written).
+	if got, err := os.ReadFile(filepath.Join(tmpDir, "willremain.md")); err != nil {
+		t.Errorf("willremain.md should still exist: %v", err)
+	} else if string(got) != "local copy" {
+		t.Errorf("willremain.md should be unchanged: got %q", got)
+	}
+}
