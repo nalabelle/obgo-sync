@@ -186,8 +186,7 @@ func (s *Service) pruneLocal(docs []couchdb.MetaDoc, filter string) error {
 	}
 
 	// Remove empty directories left behind after pruning files.
-	if deleted > 0 {
-		var dirs []string
+	var dirs []string
 		filepath.WalkDir(walkRoot, func(path string, d fs.DirEntry, err error) error {
 			if err != nil || !d.IsDir() {
 				return nil
@@ -203,7 +202,6 @@ func (s *Service) pruneLocal(docs []couchdb.MetaDoc, filter string) error {
 			_ = os.Remove(dirs[i])
 		}
 		fmt.Fprintf(os.Stderr, "Pruned %d local file(s)\n", deleted)
-	}
 
 	return nil
 }
