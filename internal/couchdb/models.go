@@ -12,6 +12,7 @@ type MetaDoc struct {
 	Children  []string               `json:"children"`
 	Eden      map[string]interface{} `json:"eden"`
 	Deleted   bool                   `json:"_deleted,omitempty"`
+	Del       bool                   `json:"deleted,omitempty"`
 	Encrypted bool                   `json:"e_,omitempty"`
 	Conflicts []string               `json:"_conflicts,omitempty"`
 }

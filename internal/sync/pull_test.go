@@ -302,6 +302,44 @@ func TestPull_DeleteRemovesSoftDeletedDocs(t *testing.T) {
 	}
 }
 
+func TestPull_DeleteRemovesLiveSyncSoftDeletedDocs(t *testing.T) {
+	tmpDir := t.TempDir()
+	db := newMockClient()
+	cr := crypto.New("")
+	svc := syncsvc.New(db, cr, tmpDir)
+
+	if err := os.MkdirAll(filepath.Join(tmpDir, "notes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "notes", "active.md"), []byte("old content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "notes", "livesync-del.md"), []byte("should be removed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Active doc + LiveSync soft-deleted doc (Del field, not Deleted).
+	chunkID := "h:active2"
+	db.chunkDocs[chunkID] = couchdb.ChunkDoc{ID: chunkID, Data: "active content 2", Type: "leaf"}
+	db.metaDocs = []couchdb.MetaDoc{
+		{ID: "notes/active.md", Type: "plain", Path: "notes/active.md", Children: []string{chunkID}},
+		{ID: "notes/livesync-del.md", Type: "plain", Path: "notes/livesync-del.md", Del: true},
+	}
+
+	if err := svc.Pull(context.Background(), "", true); err != nil {
+		t.Fatalf("Pull --delete: %v", err)
+	}
+
+	if got, err := os.ReadFile(filepath.Join(tmpDir, "notes", "active.md")); err != nil {
+		t.Errorf("notes/active.md should exist: %v", err)
+	} else if string(got) != "active content 2" {
+		t.Errorf("notes/active.md content: got %q, want %q", got, "active content 2")
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "notes", "livesync-del.md")); !os.IsNotExist(err) {
+		t.Error("notes/livesync-del.md should have been deleted")
+	}
+}
+
 func TestPull_SkipsSoftDeletedDocsWithoutDelete(t *testing.T) {
 	tmpDir := t.TempDir()
 	db := newMockClient()
@@ -327,5 +365,31 @@ func TestPull_SkipsSoftDeletedDocsWithoutDelete(t *testing.T) {
 		t.Errorf("willremain.md should still exist: %v", err)
 	} else if string(got) != "local copy" {
 		t.Errorf("willremain.md should be unchanged: got %q", got)
+	}
+}
+
+func TestPull_SkipsLiveSyncSoftDeletedDocsWithoutDelete(t *testing.T) {
+	tmpDir := t.TempDir()
+	db := newMockClient()
+	cr := crypto.New("")
+	svc := syncsvc.New(db, cr, tmpDir)
+
+	if err := os.WriteFile(filepath.Join(tmpDir, "willalso.md"), []byte("local copy"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// LiveSync soft-delete using Del field.
+	db.metaDocs = []couchdb.MetaDoc{
+		{ID: "willalso.md", Type: "plain", Path: "willalso.md", Del: true},
+	}
+
+	if err := svc.Pull(context.Background(), "", false); err != nil {
+		t.Fatalf("Pull (no --delete): %v", err)
+	}
+
+	if got, err := os.ReadFile(filepath.Join(tmpDir, "willalso.md")); err != nil {
+		t.Errorf("willalso.md should still exist: %v", err)
+	} else if string(got) != "local copy" {
+		t.Errorf("willalso.md should be unchanged: got %q", got)
 	}
 }

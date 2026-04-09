@@ -47,7 +47,7 @@ func (s *Service) Pull(ctx context.Context, filter string, delete bool) error {
 			return fmt.Errorf("pull: get %q: %w", filter, err)
 		}
 		// Soft-deleted docs: remove local file if --delete, otherwise skip.
-		if doc.Deleted {
+		if doc.Deleted || doc.Del {
 			if delete {
 				absPath := filepath.Join(s.dataDir, filepath.FromSlash(doc.Path))
 				s.suppress.Add(absPath)
@@ -78,7 +78,7 @@ func (s *Service) Pull(ctx context.Context, filter string, delete bool) error {
 	// 4. For each meta doc, apply to disk (skipping soft-deleted and those outside the folder filter).
 	var count int
 	for _, doc := range docs {
-		if doc.Deleted {
+		if doc.Deleted || doc.Del {
 			continue
 		}
 		if filter != "" && !strings.HasPrefix(doc.Path, filter) {
@@ -116,7 +116,7 @@ func (s *Service) Pull(ctx context.Context, filter string, delete bool) error {
 func (s *Service) pruneLocal(docs []couchdb.MetaDoc, filter string) error {
 	remotePaths := make(map[string]struct{}, len(docs))
 	for _, doc := range docs {
-		if doc.Deleted {
+		if doc.Deleted || doc.Del {
 			continue
 		}
 		if filter != "" && !strings.HasPrefix(doc.Path, filter) {
@@ -128,7 +128,7 @@ func (s *Service) pruneLocal(docs []couchdb.MetaDoc, filter string) error {
 	// Also collect paths of soft-deleted docs so we can remove their local files.
 	var deletePaths []string
 	for _, doc := range docs {
-		if !doc.Deleted {
+		if !doc.Deleted && !doc.Del {
 			continue
 		}
 		if filter != "" && !strings.HasPrefix(doc.Path, filter) {

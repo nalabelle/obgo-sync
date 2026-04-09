@@ -191,7 +191,7 @@ func (c *HTTPClient) AllMetaDocs(ctx context.Context) ([]MetaDoc, error) {
 		if row.Doc == nil {
 			continue
 		}
-		if row.Doc.Deleted {
+		if row.Doc.Deleted || row.Doc.Del {
 			continue
 		}
 		if row.Doc.Type != "plain" && row.Doc.Type != "newnote" {

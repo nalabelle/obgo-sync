@@ -89,7 +89,7 @@ func (s *Service) Watch(ctx context.Context, watchLocal, watchRemote bool) error
 			return nil
 		}
 
-		if event.Deleted || (event.Doc != nil && event.Doc.Deleted) {
+		if event.Deleted || (event.Doc != nil && (event.Doc.Deleted || event.Doc.Del)) {
 			absPath := filepath.Join(s.dataDir, filepath.FromSlash(path))
 			s.suppress.Add(absPath)
 			_ = os.Remove(absPath)
@@ -136,6 +136,7 @@ func (s *Service) Watch(ctx context.Context, watchLocal, watchRemote bool) error
 			return // not in CouchDB, nothing to do
 		}
 		existing.Deleted = true
+		existing.Del = true
 		if _, err := s.db.PutMeta(ctx, existing); err != nil {
 			fmt.Fprintf(os.Stderr, "watch: delete %q: %v\n", relPath, err)
 		}
